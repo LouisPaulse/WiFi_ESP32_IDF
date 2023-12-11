@@ -1,14 +1,16 @@
-#include <stdio.h>
-#include <esp_err.h>
-#include <nvs_flash.h>
-#include <esp_log.h>
-#include <utils/wpa_debug.h>
-#include <esp_netif.h>
-#include <esp_event.h>
-#include <esp_wifi_default.h>
-#include <esp_wifi.h>
-#include <freertos/event_groups.h>
+#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "esp_wifi_types.h"
+#include "nvs_flash.h"
 
+#include "lwip/err.h"
+#include "lwip/sockets.h"
+#include "lwip/dns.h"
 
 /** DEFINES **/
 #define WIFI_SUCCESS 1 << 0
@@ -27,35 +29,6 @@ static EventGroupHandle_t wifi_event_group;
 // Retry tracker
 static int s_retry_num = 0;
 
-esp_err_t connect_wifi();
-esp_err_t connect_tcp_server();
-void app_main(void) // entry point for FreeRTOS
-{
-  esp_err_t status = WIFI_FAILURE;
-
-  //Initialize storage to store wifi config
-  esp_err_t ret = nvs_flash_init();
-
-  //Check if there are remaining free pages in nvs, if not erase and reinit.
-  if(ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND){
-    ESP_ERROR_CHECK(nvs_flash_erase());
-    ret = nvs_flash_init();
-  }
-  ESP_ERROR_CHECK(ret); // Check if no errors found
-
-  //Connect to Wireless AP
-  status = connect_wifi();
-  if(WIFI_SUCCESS != status){
-    ESP_LOGI(TAG, "Failed to connect to AP");
-    return;
-  }
-
-  status = connect_tcp_server();
-  if(TCP_SUCCESS != status){
-    ESP_LOGI(TAG, "Failed to connect to remote server");
-    return;
-  }
-}
 
 // Event handler for wi-fi events
 static void wifi_event_handler(
@@ -95,8 +68,40 @@ static void ip_event_handler(
 }
 
 
-esp_err_t connect_tcp_server() {
-  return 0;
+// Connect to the server and return the result
+esp_err_t connect_tcp_server(void) { // POSIX compliant
+  struct sockaddr_in serverInfo = {0};
+  char readBuffer[1024] = {0};
+
+  serverInfo.sin_family = AF_INET;
+  serverInfo.sin_addr.s_addr = 0x8200140a; // hardcoded ip
+  serverInfo.sin_port = htons(12345); // hardcoded port
+
+
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if(sock < 0){
+    ESP_LOGE(TAG, "Failed to create a socket ...");
+    return TCP_FAILURE;
+  }
+
+  if(connect(sock, (struct sockaddr*)&serverInfo, sizeof(serverInfo)) != 0){
+    ESP_LOGE(TAG, "Failed to connect to %s!", inet_ntoa(serverInfo.sin_addr.s_addr));
+    close(sock);
+    return TCP_FAILURE;
+  }
+
+  ESP_LOGI(TAG, "Connected to TCP server");
+  bzero(readBuffer, sizeof(readBuffer));
+  int r = read(sock, readBuffer, sizeof(readBuffer)-1);
+  for(int i = 0; i<r; i++){
+    putchar(readBuffer[i]);
+  }
+
+  if(strcmp(readBuffer, "HELLO") == 0){
+    ESP_LOGI(TAG, "Success Received HELLO!!!!!");
+  }
+
+  return TCP_SUCCESS;
 }
 
 
@@ -175,6 +180,7 @@ esp_err_t connect_wifi() {
   ESP_LOGI(TAG, "STA Initialization Complete");
 
   /** WAIT **/
+  // The below blocks until WIFI_SUCCESS | WIFI_FAILURE is returned from wifi_event_group
   EventBits_t bits = xEventGroupWaitBits(
       wifi_event_group,
       WIFI_SUCCESS | WIFI_FAILURE,
@@ -183,10 +189,68 @@ esp_err_t connect_wifi() {
       portMAX_DELAY // 1 sec
       );
 
+  // xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event happened
+  if(bits & WIFI_SUCCESS){
+    ESP_LOGI(TAG, "Connected to AP");
+    status = WIFI_SUCCESS;
+  }
+  else if(bits & WIFI_FAILURE){
+    ESP_LOGI(TAG, "Failed to connect to AP");
+    status = WIFI_FAILURE;
+  }
+  else{
+    ESP_LOGE(TAG, "Unexpected Event!!!");
+    status = WIFI_FAILURE;
+  }
 
 
+  /* The event will not be processed after unregister */
+  ESP_ERROR_CHECK(
+      esp_event_handler_instance_unregister(
+          IP_EVENT,
+          IP_EVENT_STA_GOT_IP,
+          got_ip_event_instance
+      )
+  );
+
+  ESP_ERROR_CHECK(
+      esp_event_handler_instance_unregister(
+          WIFI_EVENT,
+          ESP_EVENT_ANY_ID,
+          wifi_handler_event_instance
+      )
+  );
+
+  vEventGroupDelete(wifi_event_group);
+
+  return status;
+}
 
 
+void app_main(void) // entry point for FreeRTOS
+{
+  esp_err_t status = WIFI_FAILURE;
 
-  return 0;
+  //Initialize storage to store wifi config
+  esp_err_t ret = nvs_flash_init();
+
+  //Check if there are remaining free pages in nvs, if not erase and reinit.
+  if(ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND){
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ret = nvs_flash_init();
+  }
+  ESP_ERROR_CHECK(ret); // Check if no errors found
+
+  //Connect to Wireless AP
+  status = connect_wifi();
+  if(WIFI_SUCCESS != status){
+    ESP_LOGI(TAG, "Failed to connect to AP, dying...");
+    return;
+  }
+
+  status = connect_tcp_server();
+  if(TCP_SUCCESS != status){
+    ESP_LOGI(TAG, "Failed to connect to remote server, dying...");
+    return;
+  }
 }
