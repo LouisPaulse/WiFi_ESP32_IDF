@@ -71,10 +71,10 @@ static void ip_event_handler(
 // Connect to the server and return the result
 esp_err_t connect_tcp_server(void) { // POSIX compliant
   struct sockaddr_in serverInfo = {0};
-  char readBuffer[1024] = {0};
+  char readBuffer[2048] = {0};
 
   serverInfo.sin_family = AF_INET;
-  serverInfo.sin_addr.s_addr = 0x8200140a; // hardcoded ip
+  serverInfo.sin_addr.s_addr = 0x3009A8C0; // hardcoded ip
   serverInfo.sin_port = htons(12345); // hardcoded port
 
 
@@ -91,16 +91,24 @@ esp_err_t connect_tcp_server(void) { // POSIX compliant
   }
 
   ESP_LOGI(TAG, "Connected to TCP server");
-  bzero(readBuffer, sizeof(readBuffer));
-  int r = read(sock, readBuffer, sizeof(readBuffer)-1);
-  for(int i = 0; i<r; i++){
-    putchar(readBuffer[i]);
-  }
+  static bool flag = true;
 
-  if(strcmp(readBuffer, "HELLO") == 0){
-    ESP_LOGI(TAG, "Success Received HELLO!!!!!");
-  }
+  while(flag){
+    bzero(readBuffer, sizeof(readBuffer));
+    int r = read(sock, readBuffer, sizeof(readBuffer)-1);
+    for(int i = 0; i<r; i++){
+      //putchar(readBuffer[i]);
+    }
 
+    ESP_LOGI(TAG, "Received: %s", readBuffer);
+
+    if(strcmp(readBuffer, "HELLO") == 0){
+      ESP_LOGI(TAG, "Success Received HELLO!!!!!");
+      flag = false;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(100)); // delay to avoid thrashing CPU
+  }
   return TCP_SUCCESS;
 }
 
@@ -156,8 +164,8 @@ esp_err_t connect_wifi() {
   /** START THE WIFI DRIVER **/
   wifi_config_t wifi_config = {
       .sta = {
-          .ssid = "test",
-          .password = "test_password",
+          .ssid = "",
+          .password = "",
           .threshold.authmode = WIFI_AUTH_WPA_WPA2_PSK,
           .pmf_cfg = {
               .capable = true,
